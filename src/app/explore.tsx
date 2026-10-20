@@ -1,180 +1,309 @@
-import { Image } from 'expo-image';
-import { SymbolView } from 'expo-symbols';
-import { Platform, Pressable, ScrollView, StyleSheet } from 'react-native';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { ExternalLink } from '@/components/external-link';
-import { ThemedText } from '@/components/themed-text';
-import { ThemedView } from '@/components/themed-view';
-import { Collapsible } from '@/components/ui/collapsible';
-import { WebBadge } from '@/components/web-badge';
-import { BottomTabInset, MaxContentWidth, Spacing } from '@/constants/theme';
-import { useTheme } from '@/hooks/use-theme';
+import { useEffect, useState } from 'react';
+import { View, Text, StyleSheet, ScrollView, Pressable } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import { supabase } from '../bd/bd';
 
-export default function TabTwoScreen() {
-  const safeAreaInsets = useSafeAreaInsets();
-  const insets = {
-    ...safeAreaInsets,
-    bottom: safeAreaInsets.bottom + BottomTabInset + Spacing.three,
-  };
-  const theme = useTheme();
+const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
-  const contentPlatformStyle = Platform.select({
-    android: {
-      paddingTop: insets.top,
-      paddingLeft: insets.left,
-      paddingRight: insets.right,
-      paddingBottom: insets.bottom,
-    },
-    web: {
-      paddingTop: Spacing.six,
-      paddingBottom: Spacing.four,
-    },
-  });
+type DatoMensual = { mes: string; vacantes: number; candidatos: number };
+
+export default function Reclutador() {
+  const [seccionActiva, setSeccionActiva] = useState('Inicio');
+  const [conteos, setConteos] = useState({ vacantes: 0, candidatos: 0 });
+  const [datosMensuales, setDatosMensuales] = useState<DatoMensual[]>([]);
+
+  useEffect(() => {
+    let activo = true;
+
+    const cargarEstadisticas = async () => {
+      const [v, c] = await Promise.all([
+        supabase.from('vacantes').select('*'),
+        supabase.from('candidatos').select('*'),
+      ]);
+
+      if (v.error || c.error) {
+        console.error('Error:', v.error?.message, c.error?.message);
+        return;
+      }
+
+      const vacantes = v.data ?? [];
+      const candidatos = c.data ?? [];
+      if (!activo) return;
+
+      setConteos({ vacantes: vacantes.length, candidatos: candidatos.length });
+
+      const hoy = new Date();
+      const meses = Array.from({ length: 6 }, (_, i) => {
+        const fecha = new Date(hoy.getFullYear(), hoy.getMonth() - 5 + i, 1);
+        return {
+          mes: MESES[fecha.getMonth()],
+          clave: `${fecha.getFullYear()}-${fecha.getMonth()}`,
+          vacantes: 0,
+          candidatos: 0,
+        };
+      });
+
+      const contar = (registros: any[], campo: 'vacantes' | 'candidatos') => {
+        registros.forEach(registro => {
+          const valor = registro.created_at ?? registro.fecha_creacion ?? registro.fecha_registro ?? registro.fecha;
+          if (!valor) return;
+
+          const fecha = new Date(valor);
+          if (Number.isNaN(fecha.getTime())) return;
+
+          const mes = meses.find(x => x.clave === `${fecha.getFullYear()}-${fecha.getMonth()}`);
+          if (mes) mes[campo]++;
+        });
+      };
+
+      contar(vacantes, 'vacantes');
+      contar(candidatos, 'candidatos');
+
+      if (activo) {
+        setDatosMensuales(meses.map(({ mes, vacantes, candidatos }) => ({ mes, vacantes, candidatos })));
+      }
+    };
+
+    cargarEstadisticas();
+
+    const canal = supabase
+      .channel('estadisticas-reclutador')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'vacantes' }, cargarEstadisticas)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'candidatos' }, cargarEstadisticas)
+      .subscribe();
+
+    return () => {
+      activo = false;
+      supabase.removeChannel(canal);
+    };
+  }, []);
+
+  const maximo = Math.max(1, ...datosMensuales.map(x => Math.max(x.vacantes, x.candidatos)));
 
   return (
-    <ScrollView
-      style={[styles.scrollView, { backgroundColor: theme.background }]}
-      contentInset={insets}
-      contentContainerStyle={[styles.contentContainer, contentPlatformStyle]}>
-      <ThemedView style={styles.container}>
-        <ThemedView style={styles.titleContainer}>
-          <ThemedText type="subtitle">Explore</ThemedText>
-          <ThemedText style={styles.centerText} themeColor="textSecondary">
-            This starter app includes example{'\n'}code to help you get started.
-          </ThemedText>
+    <SafeAreaView style={styles.pantalla}>
+      <ScrollView contentContainerStyle={styles.contenido}>
+        <Text style={styles.logo}>KADAF</Text>
+        <Text style={styles.titulo}>Panel de reclutador</Text>
 
-          <ExternalLink href="https://docs.expo.dev" asChild>
-            <Pressable style={({ pressed }) => pressed && styles.pressed}>
-              <ThemedView type="backgroundElement" style={styles.linkButton}>
-                <ThemedText type="link">Expo documentation</ThemedText>
-                <SymbolView
-                  tintColor={theme.text}
-                  name={{ ios: 'arrow.up.right.square', android: 'link', web: 'link' }}
-                  size={12}
-                />
-              </ThemedView>
+        <View style={styles.tarjetas}>
+          {[
+            { titulo: 'Vacantes', valor: conteos.vacantes },
+            { titulo: 'Candidatos', valor: conteos.candidatos },
+            { titulo: 'Postulaciones', valor: '—' },
+          ].map(item => (
+            <View key={item.titulo} style={styles.tarjeta}>
+              <Text style={styles.etiqueta}>{item.titulo}</Text>
+              <Text style={styles.numero}>{item.valor}</Text>
+            </View>
+          ))}
+        </View>
+
+        <Text style={styles.subtitulo}>Accesos rápidos</Text>
+        <View style={styles.accesos}>
+          {['Vacantes', 'Candidatos'].map(nombre => (
+            <Pressable key={nombre} style={styles.boton} onPress={() => setSeccionActiva(nombre)}>
+              <Text style={styles.textoBoton}>Ver {nombre}</Text>
             </Pressable>
-          </ExternalLink>
-        </ThemedView>
+          ))}
+        </View>
 
-        <ThemedView style={styles.sectionsWrapper}>
-          <Collapsible title="File-based routing">
-            <ThemedText type="small">
-              This app has two screens: <ThemedText type="code">src/app/index.tsx</ThemedText> and{' '}
-              <ThemedText type="code">src/app/explore.tsx</ThemedText>
-            </ThemedText>
-            <ThemedText type="small">
-              The layout file in <ThemedText type="code">src/app/_layout.tsx</ThemedText> sets up
-              the tab navigator.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/router/introduction">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+        {seccionActiva !== 'Inicio' && (
+          <Text style={styles.mensaje}>Sección seleccionada: {seccionActiva}</Text>
+        )}
 
-          <Collapsible title="Android, iOS, and web support">
-            <ThemedView type="backgroundElement" style={styles.collapsibleContent}>
-              <ThemedText type="small">
-                You can open this project on Android, iOS, and the web. To open the web version,
-                press <ThemedText type="smallBold">w</ThemedText> in the terminal running this
-                project.
-              </ThemedText>
-              <Image
-                source={require('@/assets/images/tutorial-web.png')}
-                style={styles.imageTutorial}
-              />
-            </ThemedView>
-          </Collapsible>
+        <View style={styles.panel}>
+          <Text style={styles.subtitulo}>Estadísticas por mes</Text>
+          <View style={styles.leyenda}>
+            <Text style={{ color: '#2563EB' }}>■ Vacantes</Text>
+            <Text style={{ color: '#10B981' }}>■ Candidatos</Text>
+          </View>
 
-          <Collapsible title="Images">
-            <ThemedText type="small">
-              For static images, you can use the <ThemedText type="code">@2x</ThemedText> and{' '}
-              <ThemedText type="code">@3x</ThemedText> suffixes to provide files for different
-              screen densities.
-            </ThemedText>
-            <Image source={require('@/assets/images/react-logo.png')} style={styles.imageReact} />
-            <ExternalLink href="https://reactnative.dev/docs/images">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
+          <View style={styles.grafica}>
+            {datosMensuales.map(item => (
+              <View key={item.mes} style={styles.grupoMes}>
+                <View style={styles.barras}>
+                  {[item.vacantes, item.candidatos].map((valor, i) => (
+                    <View key={i} style={styles.columna}>
+                      <Text style={styles.valor}>{valor}</Text>
+                      <View style={[
+                        styles.barra,
+                        {
+                          height: Math.max(4, (valor / maximo) * 110),
+                          backgroundColor: i === 0 ? '#2563EB' : '#10B981',
+                        },
+                      ]} />
+                    </View>
+                  ))}
+                </View>
+                <Text style={styles.mes}>{item.mes}</Text>
+              </View>
+            ))}
+          </View>
+        </View>
+      </ScrollView>
 
-          <Collapsible title="Light and dark mode components">
-            <ThemedText type="small">
-              This template has light and dark mode support. The{' '}
-              <ThemedText type="code">useColorScheme()</ThemedText> hook lets you inspect what the
-              user&apos;s current color scheme is, and so you can adjust UI colors accordingly.
-            </ThemedText>
-            <ExternalLink href="https://docs.expo.dev/develop/user-interface/color-themes/">
-              <ThemedText type="linkPrimary">Learn more</ThemedText>
-            </ExternalLink>
-          </Collapsible>
-
-          <Collapsible title="Animations">
-            <ThemedText type="small">
-              This template includes an example of an animated component. The{' '}
-              <ThemedText type="code">src/components/ui/collapsible.tsx</ThemedText> component uses
-              the powerful <ThemedText type="code">react-native-reanimated</ThemedText> library to
-              animate opening this hint.
-            </ThemedText>
-          </Collapsible>
-        </ThemedView>
-        {Platform.OS === 'web' && <WebBadge />}
-      </ThemedView>
-    </ScrollView>
+      {/* Menú fijo al final de la pantalla */}
+      <View style={styles.menu}>
+        {['Inicio', 'Vacantes', 'Candidatos', 'Perfil'].map(nombre => (
+          <Pressable key={nombre} onPress={() => setSeccionActiva(nombre)} style={styles.opcion}>
+            <Text style={[styles.opcionMenu, seccionActiva === nombre && styles.activo]}>
+              {nombre}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  scrollView: {
+  // Pantalla principal
+  pantalla: {
     flex: 1,
+    backgroundColor: '#F4F6FA',
   },
-  contentContainer: {
+  contenido: {
+    padding: 20,
+    paddingBottom: 25,
+  },
+
+  // Encabezado
+  logo: {
+    fontSize: 26,
+    fontWeight: 'bold',
+    color: '#2563EB',
+  },
+  titulo: {
+    fontSize: 21,
+    fontWeight: 'bold',
+    color: '#172033',
+    marginVertical: 12,
+  },
+
+  // Tarjetas de estadísticas
+  tarjetas: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 24,
+  },
+  tarjeta: {
+    flex: 1,
+    minWidth: 0,
+    backgroundColor: '#FFF',
+    padding: 10,
+    borderRadius: 12,
+  },
+  etiqueta: {
+    color: '#667085',
+    fontSize: 11,
+  },
+  numero: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#172033',
+    marginTop: 8,
+  },
+
+  // Accesos rápidos
+  subtitulo: {
+    fontSize: 17,
+    fontWeight: 'bold',
+    color: '#172033',
+    marginBottom: 14,
+  },
+  accesos: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  boton: {
+    flex: 1,
+    backgroundColor: '#2563EB',
+    padding: 14,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  textoBoton: {
+    color: '#FFF',
+    fontWeight: 'bold',
+  },
+  mensaje: {
+    marginTop: 15,
+    color: '#475467',
+  },
+
+  // Gráfica mensual
+  panel: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 16,
+    marginTop: 24,
+  },
+  leyenda: {
     flexDirection: 'row',
     justifyContent: 'center',
+    gap: 18,
+    marginBottom: 15,
   },
-  container: {
-    maxWidth: MaxContentWidth,
-    flexGrow: 1,
-  },
-  titleContainer: {
-    gap: Spacing.three,
-    alignItems: 'center',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.six,
-  },
-  centerText: {
-    textAlign: 'center',
-  },
-  pressed: {
-    opacity: 0.7,
-  },
-  linkButton: {
+  grafica: {
     flexDirection: 'row',
-    paddingHorizontal: Spacing.four,
-    paddingVertical: Spacing.two,
-    borderRadius: Spacing.five,
-    justifyContent: 'center',
-    gap: Spacing.one,
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    minHeight: 150,
+  },
+  grupoMes: {
+    flex: 1,
     alignItems: 'center',
   },
-  sectionsWrapper: {
-    gap: Spacing.five,
-    paddingHorizontal: Spacing.four,
-    paddingTop: Spacing.three,
+  barras: {
+    height: 135,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 3,
   },
-  collapsibleContent: {
+  columna: {
     alignItems: 'center',
+    justifyContent: 'flex-end',
   },
-  imageTutorial: {
-    width: '100%',
-    aspectRatio: 296 / 171,
-    borderRadius: Spacing.three,
-    marginTop: Spacing.two,
+  barra: {
+    width: 12,
+    borderTopLeftRadius: 4,
+    borderTopRightRadius: 4,
   },
-  imageReact: {
-    width: 100,
-    height: 100,
-    alignSelf: 'center',
+  valor: {
+    fontSize: 10,
+    color: '#475467',
+    marginBottom: 3,
+  },
+  mes: {
+    fontSize: 11,
+    color: '#667085',
+    marginTop: 8,
+  },
+
+  // Menú inferior
+  menu: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 8,
+    backgroundColor: '#FFF',
+    borderTopWidth: 1,
+    borderTopColor: '#E5E7EB',
+  },
+  opcion: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 4,
+  },
+  opcionMenu: {
+    fontSize: 12,
+    color: '#667085',
+  },
+  activo: {
+    color: '#2563EB',
+    fontWeight: 'bold',
   },
 });
